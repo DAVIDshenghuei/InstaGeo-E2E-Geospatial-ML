@@ -559,7 +559,10 @@ def main(cfg: DictConfig) -> None:
         trainer.fit(model, train_loader, val_loader)
 
     elif mode == "eval":
+        # 檢查必要的配置參數
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)
+        
+        # 創建測試數據集
         test_dataset = InstaGeoDataset(
             fname=os.path.join(root_dir, cfg.test_filepath),
             input_root=root_dir,
@@ -573,11 +576,19 @@ def main(cfg: DictConfig) -> None:
             replace_label=cfg.dataloader.replace_label,
             constant_multiplier=cfg.dataloader.constant_multiplier,
             augment=False,
-            mask_cloud=cfg.test.mask_cloud,
+            mask_cloud=cfg.test.get("mask_cloud", False),  # 使用get方法提供默認值
         )
-        test_loader = create_dataloader(
-            test_dataset, batch_size=cfg.train.batch_size, collate_fn=eval_collate_fn
+
+        # 創建測試數據加載器
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=cfg.test.get("batch_size", 16),  # 使用get方法提供默認值
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
         )
+
+        # 加載模型
         model = PrithviSegmentationModule.load_from_checkpoint(
             cfg.checkpoint_path,
             image_size=cfg.dataloader.img_size,
@@ -587,11 +598,10 @@ def main(cfg: DictConfig) -> None:
             temporal_step=cfg.dataloader.temporal_dim,
             class_weights=cfg.train.class_weights,
             ignore_index=cfg.train.ignore_index,
-            weight_decay=cfg.train.weight_decay,
         )
-        trainer = pl.Trainer(accelerator=get_device())
-        result = trainer.test(model, dataloaders=test_loader)
-        log.info(f"Evaluation results:\n{result}")
+
+        # 進行評估
+        evaluate_model(model, test_loader, cfg)
 
     elif mode == "sliding_inference":
         model = PrithviSegmentationModule.load_from_checkpoint(
@@ -667,10 +677,14 @@ def main(cfg: DictConfig) -> None:
 
     elif mode == "chip_inference":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)
+        
+        # 設置默認的輸出目錄
         output_dir = os.path.join(root_dir, "predictions")
         os.makedirs(output_dir, exist_ok=True)
+        
+        # 創建測試數據集
         test_dataset = InstaGeoDataset(
-            fname=cfg.test_filepath,
+            fname=os.path.join(root_dir, cfg.test_filepath),
             input_root=root_dir,
             bands=cfg.dataloader.bands,
             mean=cfg.dataloader.mean,
@@ -682,11 +696,19 @@ def main(cfg: DictConfig) -> None:
             replace_label=cfg.dataloader.replace_label,
             constant_multiplier=cfg.dataloader.constant_multiplier,
             augment=False,
-            mask_cloud=cfg.test.mask_cloud,
+            mask_cloud=cfg.test.get("mask_cloud", False),
         )
-        test_loader = create_dataloader(
-            test_dataset, batch_size=cfg.train.batch_size, collate_fn=infer_collate_fn
+        
+        # 創建測試數據加載器
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=cfg.test.get("batch_size", 16),
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
         )
+        
+        # 加載模型
         model = PrithviSegmentationModule.load_from_checkpoint(
             cfg.checkpoint_path,
             image_size=cfg.dataloader.img_size,
@@ -696,9 +718,12 @@ def main(cfg: DictConfig) -> None:
             temporal_step=cfg.dataloader.temporal_dim,
             class_weights=cfg.train.class_weights,
             ignore_index=cfg.train.ignore_index,
-            weight_decay=cfg.train.weight_decay,
         )
+        
+        # 進行推理
+        log.info(f"Starting chip inference, saving results to {output_dir}")
         chip_inference(test_loader, output_dir, model, device=get_device())
+        log.info("Chip inference completed")
 
 
 def train_with_optimization(model, train_loader, val_loader, config):
