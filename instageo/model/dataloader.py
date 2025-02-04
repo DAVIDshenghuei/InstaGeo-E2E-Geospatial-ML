@@ -217,44 +217,34 @@ def process_test(
 
 
 def get_raster_data(
-    fname: str | dict[str, dict[str, str]],
-    is_label: bool = True,
-    bands: List[int] | None = None,
-    no_data_value: int | None = -9999,
-    mask_cloud: bool = True,
-    water_mask: bool = False,
+    filepath: str,
+    bands: List[int],
+    no_data_value: int = -9999,
+    constant_multiplier: float = 1.0,
 ) -> np.ndarray:
-    """Load and process raster data from a file.
+    """獲取柵格數據.
 
     Args:
-        fname (str): Filename to load data from.
-        is_label (bool): Whether the file is a label file.
-        bands (List[int]): Index of bands to select from array.
-        no_data_value (int | None): NODATA value in image raster.
-        mask_cloud (bool): Perform cloud masking.
-        water_mask (bool): Perform water masking.
+        filepath: 文件路徑
+        bands: 波段列表
+        no_data_value: 無數據值
+        constant_multiplier: 乘數因子
 
     Returns:
-        np.ndarray: Numpy array representing the processed data.
+        np.ndarray: 處理後的數據
     """
-    if isinstance(fname, dict):
-        data, mask, crs = open_mf_tiff_dataset(fname, load_masks=False)
-        data = data.fillna(no_data_value)
-        data = data.band_data.values
-    else:
-        with rasterio.open(fname) as src:
-            data = src.read()
-    if (not is_label) and bands:
-        data = data[bands, ...]
-    # For some reasons, some few HLS tiles are not scaled in v2.0.
-    # In the following lines, we find and scale them
-    bands = []
-    for band in data:
-        if band.max() > 10:
-            band *= 0.0001
-        bands.append(band)
-    data = np.stack(bands, axis=0)
-    return data
+    with rasterio.open(filepath) as src:
+        # 先將數據讀取為 float32 類型
+        band = src.read(bands).astype(np.float32)
+        
+        # 應用乘數因子
+        if constant_multiplier != 1.0:
+            band = band * constant_multiplier
+            
+        # 處理無效值
+        band[band == no_data_value] = 0
+        
+    return band
 
 
 def process_data(
@@ -285,15 +275,12 @@ def process_data(
     """
     arr_x = get_raster_data(
         im_fname,
-        is_label=False,
         bands=bands,
         no_data_value=no_data_value,
-        mask_cloud=mask_cloud,
-        water_mask=False,
+        constant_multiplier=constant_multiplier,
     )
-    arr_x = arr_x * constant_multiplier
     if mask_fname:
-        arr_y = get_raster_data(mask_fname)
+        arr_y = get_raster_data(mask_fname, bands=bands, no_data_value=no_data_value)
         if replace_label:
             arr_y = np.where(arr_y == replace_label[0], replace_label[1], arr_y)
         if reduce_to_zero:
