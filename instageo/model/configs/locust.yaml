@@ -25,8 +25,8 @@ model:
   use_depth_conv: true
 
 dataloader:
-  # 3*(Blue, Green, Red, Narrow NIR, SWIR 1, SWIR 2)
-  bands: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+  # 修改波段索引為1-based
+  bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
   mean:
     [
       623.2724609375,
