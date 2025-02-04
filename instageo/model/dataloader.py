@@ -226,7 +226,7 @@ def get_raster_data(
 
     Args:
         filepath: 文件路徑
-        bands: 波段列表
+        bands: 波段列表 (1-based indexing)
         no_data_value: 無數據值
         constant_multiplier: 乘數因子
 
@@ -234,7 +234,15 @@ def get_raster_data(
         np.ndarray: 處理後的數據
     """
     with rasterio.open(filepath) as src:
-        # 先將數據讀取為 float32 類型
+        # 確保波段索引從1開始
+        bands = [b + 1 for b in bands] if bands[0] == 0 else bands
+        
+        # 檢查波段索引是否有效
+        valid_bands = list(range(1, src.count + 1))
+        if not all(b in valid_bands for b in bands):
+            raise ValueError(f"Invalid band indices. Valid bands are {valid_bands}")
+            
+        # 讀取數據
         band = src.read(bands).astype(np.float32)
         
         # 應用乘數因子
@@ -257,36 +265,49 @@ def process_data(
     constant_multiplier: float = 1.0,
     mask_cloud: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Process image and mask data from filenames.
+    """處理圖像和掩碼數據.
 
     Args:
-        im_fname (str): Filename for the image data.
-        mask_fname (str | None): Filename for the mask data.
-        bands (List[int]): Indices of bands to select from array.
-        no_data_value (int | None): NODATA value in image raster.
-        reduce_to_zero (bool): Reduces the label index to start from Zero.
-        replace_label (Tuple): Tuple of value to replace and the replacement value.
-        constant_multiplier (float): Constant multiplier for image.
-        mask_cloud (bool): Perform cloud masking.
+        im_fname: 圖像文件名
+        mask_fname: 掩碼文件名
+        bands: 波段索引列表
+        no_data_value: 無數據值
+        reduce_to_zero: 是否將標籤索引從0開始
+        replace_label: 要替換的標籤值元組
+        constant_multiplier: 圖像乘數
+        mask_cloud: 是否進行雲掩碼
 
     Returns:
-        Tuple[np.ndarray, np.ndarray]: A tuple of numpy arrays representing the processed
-        image and mask data.
+        Tuple[np.ndarray, np.ndarray]: 處理後的圖像和掩碼數據
     """
-    arr_x = get_raster_data(
-        im_fname,
-        bands=bands,
-        no_data_value=no_data_value,
-        constant_multiplier=constant_multiplier,
-    )
+    try:
+        arr_x = get_raster_data(
+            im_fname,
+            bands=bands,
+            no_data_value=no_data_value,
+            constant_multiplier=constant_multiplier,
+        )
+    except Exception as e:
+        print(f"Error processing image {im_fname}: {str(e)}")
+        raise
+
     if mask_fname:
-        arr_y = get_raster_data(mask_fname, bands=bands, no_data_value=no_data_value)
-        if replace_label:
-            arr_y = np.where(arr_y == replace_label[0], replace_label[1], arr_y)
-        if reduce_to_zero:
-            arr_y -= 1
+        try:
+            arr_y = get_raster_data(
+                mask_fname, 
+                bands=[1],  # 掩碼通常只有一個波段
+                no_data_value=no_data_value
+            )
+            if replace_label:
+                arr_y = np.where(arr_y == replace_label[0], replace_label[1], arr_y)
+            if reduce_to_zero:
+                arr_y -= 1
+        except Exception as e:
+            print(f"Error processing mask {mask_fname}: {str(e)}")
+            raise
     else:
         arr_y = None
+
     return arr_x, arr_y
 
 
@@ -366,24 +387,3 @@ class InstaGeoDataset(torch.utils.data.Dataset):
             i (int): Sample index to retrieve.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple of tensors representing the
-            processed images and label.
-        """
-        im_fname, mask_fname = self.file_paths[i]
-        arr_x, arr_y = process_data(
-            im_fname,
-            mask_fname,
-            no_data_value=self.no_data_value,
-            replace_label=self.replace_label,
-            reduce_to_zero=self.reduce_to_zero,
-            bands=self.bands,
-            constant_multiplier=self.constant_multiplier,
-        )
-        if self.include_filenames:
-            return self.preprocess_func(arr_x, arr_y), im_fname
-        else:
-            return self.preprocess_func(arr_x, arr_y)
-
-    def __len__(self) -> int:
-        """Return length of dataset."""
-        return len(self.file_paths)
