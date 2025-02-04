@@ -117,15 +117,46 @@ class Norm2D(nn.Module):
         return x
 
 
+class AttentionBlock(nn.Module):
+    """空間注意力模塊"""
+    def __init__(self, in_channels):
+        super().__init__()
+        self.mha = nn.MultiheadAttention(in_channels, 8)
+        self.norm = nn.LayerNorm(in_channels)
+        
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x_flat = x.flatten(2).permute(2, 0, 1)  # (h*w, b, c)
+        attn_out, _ = self.mha(x_flat, x_flat, x_flat)
+        attn_out = attn_out.permute(1, 2, 0).view(b, c, h, w)
+        return self.norm(x + attn_out)
+
+
+class TemporalAttention(nn.Module):
+    """時間注意力模塊"""
+    def __init__(self, channels):
+        super().__init__()
+        self.temporal_attn = nn.MultiheadAttention(channels, 4)
+        self.norm = nn.LayerNorm(channels)
+        
+    def forward(self, x):
+        # x shape: (B, C, T, H, W)
+        b, c, t, h, w = x.shape
+        x_flat = x.permute(2, 0, 1, 3, 4).reshape(t, b*h*w, c)
+        attn_out, _ = self.temporal_attn(x_flat, x_flat, x_flat)
+        attn_out = attn_out.view(t, b, c, h, w).permute(1, 2, 0, 3, 4)
+        return self.norm(x + attn_out)
+
+
 class PrithviSeg(nn.Module):
     """Prithvi Segmentation Model."""
 
     def __init__(
         self,
-        temporal_step: int = 1,
+        temporal_step: int = 3,
         image_size: int = 224,
         num_classes: int = 2,
-        freeze_backbone: bool = True,
+        freeze_backbone: bool = False,
     ) -> None:
         """Initialize the PrithviSeg model.
 
@@ -218,6 +249,20 @@ class PrithviSeg(nn.Module):
             ),
         )
 
+        # 添加注意力模塊
+        self.spatial_attention = AttentionBlock(model_args["embed_dim"])
+        self.temporal_attention = TemporalAttention(model_args["embed_dim"])
+        
+        # 添加深度可分離卷積
+        self.depth_conv = nn.Sequential(
+            nn.Conv2d(model_args["embed_dim"], model_args["embed_dim"], 
+                     kernel_size=3, padding=1, groups=model_args["embed_dim"]),
+            nn.BatchNorm2d(model_args["embed_dim"]),
+            nn.ReLU(),
+            nn.Conv2d(model_args["embed_dim"], model_args["embed_dim"], 
+                     kernel_size=1)
+        )
+
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         """Define the forward pass of the model.
 
@@ -228,6 +273,17 @@ class PrithviSeg(nn.Module):
             torch.Tensor: Output tensor after image segmentation.
         """
         features = self.prithvi_100M_backbone(img)
+        
+        # 應用空間注意力
+        features = self.spatial_attention(features)
+        
+        # 應用時間注意力
+        b, c, t, h, w = features.shape
+        features = self.temporal_attention(features)
+        
+        # 應用深度可分離卷積
+        features = self.depth_conv(features)
+        
         # drop cls token
         reshaped_features = features[:, 1:, :]
         feature_img_side_length = int(
