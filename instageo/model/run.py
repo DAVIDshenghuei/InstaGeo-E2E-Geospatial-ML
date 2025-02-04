@@ -470,103 +470,64 @@ def compute_mean_std(data_loader: DataLoader) -> Tuple[List[float], List[float]]
 
 @hydra.main(config_path="configs", version_base=None, config_name="config")
 def main(cfg: DictConfig) -> None:
-    """Runner Entry Point.
-
-    Performs training, evaluation or inference/prediction depending on the selected mode.
-
-    Arguments:
-        cfg (DictConfig): Dict-like object containing necessary values used to configure runner.
-
-    Returns:
-        None.
-    """
-    log.info(f"Script: {__file__}")
-    log.info(f"Imported hydra config:\n{OmegaConf.to_yaml(cfg)}")
-
-    BANDS = cfg.dataloader.bands
-    MEAN = cfg.dataloader.mean
-    STD = cfg.dataloader.std
-    IM_SIZE = cfg.dataloader.img_size
-    TEMPORAL_SIZE = cfg.dataloader.temporal_dim
-
-    batch_size = cfg.train.batch_size
+    """Main entry point for training, evaluation and inference."""
     root_dir = cfg.root_dir
-    valid_filepath = cfg.valid_filepath
-    train_filepath = cfg.train_filepath
-    test_filepath = cfg.test_filepath
-    checkpoint_path = cfg.checkpoint_path
+    mode = cfg.mode
 
-    if cfg.mode == "stats":
+    if mode == "train":
+        # 創建訓練數據集
         train_dataset = InstaGeoDataset(
-            filename=train_filepath,
+            fname=os.path.join(root_dir, cfg.train_filepath),
             input_root=root_dir,
-            preprocess_func=partial(
-                process_and_augment,
-                mean=[0] * len(MEAN),
-                std=[1] * len(STD),
-                temporal_size=TEMPORAL_SIZE,
-                im_size=IM_SIZE,
-            ),
-            bands=BANDS,
-            replace_label=cfg.dataloader.replace_label,
-            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            bands=cfg.dataloader.bands,
+            mean=cfg.dataloader.mean,
+            std=cfg.dataloader.std,
+            temporal_size=cfg.dataloader.temporal_dim,
+            img_size=cfg.dataloader.img_size,
             no_data_value=cfg.dataloader.no_data_value,
+            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            replace_label=cfg.dataloader.replace_label,
             constant_multiplier=cfg.dataloader.constant_multiplier,
+            augment=True,
+            mask_cloud=False,
         )
-        train_loader = create_dataloader(
+
+        # 創建驗證數據集
+        val_dataset = InstaGeoDataset(
+            fname=os.path.join(root_dir, cfg.valid_filepath),
+            input_root=root_dir,
+            bands=cfg.dataloader.bands,
+            mean=cfg.dataloader.mean,
+            std=cfg.dataloader.std,
+            temporal_size=cfg.dataloader.temporal_dim,
+            img_size=cfg.dataloader.img_size,
+            no_data_value=cfg.dataloader.no_data_value,
+            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            replace_label=cfg.dataloader.replace_label,
+            constant_multiplier=cfg.dataloader.constant_multiplier,
+            augment=False,
+            mask_cloud=False,
+        )
+
+        # 創建數據加載器
+        train_loader = DataLoader(
             train_dataset,
-            batch_size=batch_size,
+            batch_size=cfg.train.batch_size,
             shuffle=True,
-            num_workers=1,
-        )
-        mean, std = compute_mean_std(train_loader)
-        print(mean)
-        print(std)
-        exit(0)
-
-    if cfg.mode == "train":
-        check_required_flags(["root_dir", "train_filepath", "valid_filepath"], cfg)
-        train_dataset = InstaGeoDataset(
-            filename=train_filepath,
-            input_root=root_dir,
-            preprocess_func=partial(
-                process_and_augment,
-                mean=MEAN,
-                std=STD,
-                temporal_size=TEMPORAL_SIZE,
-                im_size=IM_SIZE,
-            ),
-            bands=BANDS,
-            replace_label=cfg.dataloader.replace_label,
-            reduce_to_zero=cfg.dataloader.reduce_to_zero,
-            no_data_value=cfg.dataloader.no_data_value,
-            constant_multiplier=cfg.dataloader.constant_multiplier,
+            num_workers=4,
+            pin_memory=True,
         )
 
-        valid_dataset = InstaGeoDataset(
-            filename=valid_filepath,
-            input_root=root_dir,
-            preprocess_func=partial(
-                process_and_augment,
-                mean=MEAN,
-                std=STD,
-                temporal_size=TEMPORAL_SIZE,
-                im_size=IM_SIZE,
-            ),
-            bands=BANDS,
-            replace_label=cfg.dataloader.replace_label,
-            reduce_to_zero=cfg.dataloader.reduce_to_zero,
-            no_data_value=cfg.dataloader.no_data_value,
-            constant_multiplier=cfg.dataloader.constant_multiplier,
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=cfg.train.batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
         )
-        train_loader = create_dataloader(
-            train_dataset, batch_size=batch_size, shuffle=True, num_workers=1
-        )
-        valid_loader = create_dataloader(
-            valid_dataset, batch_size=batch_size, shuffle=False, num_workers=1
-        )
+
         model = PrithviSegmentationModule(
-            image_size=IM_SIZE,
+            image_size=cfg.dataloader.img_size,
             learning_rate=cfg.train.learning_rate,
             freeze_backbone=cfg.model.freeze_backbone,
             num_classes=cfg.model.num_classes,
@@ -595,35 +556,31 @@ def main(cfg: DictConfig) -> None:
         )
 
         # run training and validation
-        trainer.fit(model, train_loader, valid_loader)
+        trainer.fit(model, train_loader, val_loader)
 
-    elif cfg.mode == "eval":
+    elif mode == "eval":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)
         test_dataset = InstaGeoDataset(
-            filename=test_filepath,
+            fname=os.path.join(root_dir, cfg.test_filepath),
             input_root=root_dir,
-            preprocess_func=partial(
-                process_test,
-                mean=MEAN,
-                std=STD,
-                temporal_size=TEMPORAL_SIZE,
-                img_size=cfg.test.img_size,
-                crop_size=cfg.test.crop_size,
-                stride=cfg.test.stride,
-            ),
-            bands=BANDS,
-            replace_label=cfg.dataloader.replace_label,
-            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            bands=cfg.dataloader.bands,
+            mean=cfg.dataloader.mean,
+            std=cfg.dataloader.std,
+            temporal_size=cfg.dataloader.temporal_dim,
+            img_size=cfg.test.img_size,
             no_data_value=cfg.dataloader.no_data_value,
+            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            replace_label=cfg.dataloader.replace_label,
             constant_multiplier=cfg.dataloader.constant_multiplier,
-            include_filenames=True,
+            augment=False,
+            mask_cloud=cfg.test.mask_cloud,
         )
         test_loader = create_dataloader(
-            test_dataset, batch_size=batch_size, collate_fn=eval_collate_fn
+            test_dataset, batch_size=cfg.train.batch_size, collate_fn=eval_collate_fn
         )
         model = PrithviSegmentationModule.load_from_checkpoint(
-            checkpoint_path,
-            image_size=IM_SIZE,
+            cfg.checkpoint_path,
+            image_size=cfg.dataloader.img_size,
             learning_rate=cfg.train.learning_rate,
             freeze_backbone=cfg.model.freeze_backbone,
             num_classes=cfg.model.num_classes,
@@ -636,10 +593,10 @@ def main(cfg: DictConfig) -> None:
         result = trainer.test(model, dataloaders=test_loader)
         log.info(f"Evaluation results:\n{result}")
 
-    elif cfg.mode == "sliding_inference":
+    elif mode == "sliding_inference":
         model = PrithviSegmentationModule.load_from_checkpoint(
             cfg.checkpoint_path,
-            image_size=IM_SIZE,
+            image_size=cfg.dataloader.img_size,
             learning_rate=cfg.train.learning_rate,
             freeze_backbone=cfg.model.freeze_backbone,
             num_classes=cfg.model.num_classes,
@@ -708,34 +665,31 @@ def main(cfg: DictConfig) -> None:
             ) as dst:
                 dst.write(prediction, 1)
 
-    elif cfg.mode == "chip_inference":
+    elif mode == "chip_inference":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)
         output_dir = os.path.join(root_dir, "predictions")
         os.makedirs(output_dir, exist_ok=True)
         test_dataset = InstaGeoDataset(
-            filename=test_filepath,
+            fname=cfg.test_filepath,
             input_root=root_dir,
-            preprocess_func=partial(
-                process_and_augment,
-                mean=MEAN,
-                std=STD,
-                temporal_size=TEMPORAL_SIZE,
-                im_size=cfg.test.img_size,
-                augment=False,
-            ),
-            bands=BANDS,
-            replace_label=cfg.dataloader.replace_label,
-            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            bands=cfg.dataloader.bands,
+            mean=cfg.dataloader.mean,
+            std=cfg.dataloader.std,
+            temporal_size=cfg.dataloader.temporal_dim,
+            img_size=cfg.test.img_size,
             no_data_value=cfg.dataloader.no_data_value,
+            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            replace_label=cfg.dataloader.replace_label,
             constant_multiplier=cfg.dataloader.constant_multiplier,
-            include_filenames=True,
+            augment=False,
+            mask_cloud=cfg.test.mask_cloud,
         )
         test_loader = create_dataloader(
-            test_dataset, batch_size=batch_size, collate_fn=infer_collate_fn
+            test_dataset, batch_size=cfg.train.batch_size, collate_fn=infer_collate_fn
         )
         model = PrithviSegmentationModule.load_from_checkpoint(
-            checkpoint_path,
-            image_size=IM_SIZE,
+            cfg.checkpoint_path,
+            image_size=cfg.dataloader.img_size,
             learning_rate=cfg.train.learning_rate,
             freeze_backbone=cfg.model.freeze_backbone,
             num_classes=cfg.model.num_classes,
