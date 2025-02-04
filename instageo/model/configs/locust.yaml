@@ -8,15 +8,21 @@ mode: train # train or eval
 
 train:
   learning_rate: 0.0001
-  num_epochs: 20
-  batch_size: 8
+  num_epochs: 50
+  batch_size: 16
   class_weights: [1, 1]
   ignore_index: -1
   weight_decay: 0.1
+  label_smoothing: 0.1
+  gradient_clip: 1.0
+  mixed_precision: true
 
 model:
-  freeze_backbone: False
+  freeze_backbone: false
   num_classes: 2
+  use_attention: true
+  temporal_attention: true
+  use_depth_conv: true
 
 dataloader:
   # 3*(Blue, Green, Red, Narrow NIR, SWIR 1, SWIR 2)
