@@ -346,44 +346,85 @@ class InstaGeoDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        filename: str,
+        fname: str,
         input_root: str,
-        preprocess_func: Callable,
-        no_data_value: int | None,
-        replace_label: Tuple,
-        reduce_to_zero: bool,
-        constant_multiplier: float,
-        bands: List[int] | None = None,
-        include_filenames: bool = False,
-    ):
-        """Dataset Class for loading and preprocessing the dataset.
+        bands: List[int],
+        mean: List[float],
+        std: List[float],
+        temporal_size: int = 1,
+        img_size: int = 224,
+        no_data_value: int | None = -9999,
+        reduce_to_zero: bool = False,
+        replace_label: Tuple | None = None,
+        constant_multiplier: float = 1.0,
+        augment: bool = True,
+        mask_cloud: bool = False,
+    ) -> None:
+        """Initialize the InstaGeo Dataset.
 
         Args:
-            filename (str): Filename of the CSV file containing data paths.
-            input_root (str): Root directory for input images and labels.
-            preprocess_func (Callable): Function to preprocess the data.
-            bands (List[int]): Indices of bands to select from array.
-            no_data_value (int | None): NODATA value in image raster.
-            reduce_to_zero (bool): Reduces the label index to start from Zero.
-            replace_label (Tuple): Tuple of value to replace and the replacement value.
-            constant_multiplier (float): Constant multiplier for image.
-            include_filenames (bool): Flag that determines whether to return filenames.
-
+            fname: CSV文件名
+            input_root: 輸入根目錄
+            bands: 波段列表
+            mean: 均值列表
+            std: 標準差列表
+            temporal_size: 時間維度大小
+            img_size: 圖像大小
+            no_data_value: 無數據值
+            reduce_to_zero: 是否將標籤從0開始
+            replace_label: 替換標籤值
+            constant_multiplier: 乘數因子
+            augment: 是否進行數據增強
+            mask_cloud: 是否進行雲掩碼
         """
-        self.input_root = input_root
-        self.preprocess_func = preprocess_func
+        super().__init__()
+        self.file_paths = load_data_from_csv(fname, input_root)
         self.bands = bands
-        self.file_paths = load_data_from_csv(filename, input_root)
+        self.mean = mean
+        self.std = std
+        self.temporal_size = temporal_size
+        self.img_size = img_size
         self.no_data_value = no_data_value
-        self.replace_label = replace_label
         self.reduce_to_zero = reduce_to_zero
+        self.replace_label = replace_label
         self.constant_multiplier = constant_multiplier
-        self.include_filenames = include_filenames
+        self.augment = augment
+        self.mask_cloud = mask_cloud
 
-    def __getitem__(self, i: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Retrieves a sample from dataset.
-
-        Args:
-            i (int): Sample index to retrieve.
+    def __len__(self) -> int:
+        """Get the length of the dataset.
 
         Returns:
+            int: 數據集長度
+        """
+        return len(self.file_paths)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """獲取數據集中的樣本.
+
+        Args:
+            idx: 樣本索引
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: (圖像數據, 標籤數據)
+        """
+        im_fname, mask_fname = self.file_paths[idx]
+        arr_x, arr_y = process_data(
+            im_fname,
+            mask_fname,
+            bands=self.bands,
+            no_data_value=self.no_data_value,
+            reduce_to_zero=self.reduce_to_zero,
+            replace_label=self.replace_label,
+            constant_multiplier=self.constant_multiplier,
+            mask_cloud=self.mask_cloud,
+        )
+        return process_and_augment(
+            arr_x,
+            arr_y,
+            mean=self.mean,
+            std=self.std,
+            temporal_size=self.temporal_size,
+            im_size=self.img_size,
+            augment=self.augment,
+        )
