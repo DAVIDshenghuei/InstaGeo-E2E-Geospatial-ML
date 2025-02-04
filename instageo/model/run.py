@@ -36,6 +36,9 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from torch.cuda.amp import autocast, GradScaler
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import OneCycleLR
 
 from instageo.model.dataloader import (
     InstaGeoDataset,
@@ -705,80 +708,6 @@ def main(cfg: DictConfig) -> None:
             ) as dst:
                 dst.write(prediction, 1)
 
-    elif cfg.mode == "sliding_inference":
-        model = PrithviSegmentationModule.load_from_checkpoint(
-            cfg.checkpoint_path,
-            image_size=IM_SIZE,
-            learning_rate=cfg.train.learning_rate,
-            freeze_backbone=cfg.model.freeze_backbone,
-            num_classes=cfg.model.num_classes,
-            temporal_step=cfg.dataloader.temporal_dim,
-            class_weights=cfg.train.class_weights,
-            ignore_index=cfg.train.ignore_index,
-            weight_decay=cfg.train.weight_decay,
-        )
-        model.eval()
-        infer_filepath = os.path.join(root_dir, cfg.test_filepath)
-        assert (
-            os.path.splitext(infer_filepath)[-1] == ".json"
-        ), f"Test file path expects a json file but got {infer_filepath}"
-        output_dir = os.path.join(root_dir, "predictions")
-        os.makedirs(output_dir, exist_ok=True)
-        with open(os.path.join(infer_filepath)) as json_file:
-            hls_dataset = json.load(json_file)
-        for key, hls_tile_path in tqdm(
-            hls_dataset.items(), desc="Processing HLS Dataset"
-        ):
-            try:
-                hls_tile, _ = process_data(
-                    hls_tile_path,
-                    None,
-                    bands=cfg.dataloader.bands,
-                    no_data_value=cfg.dataloader.no_data_value,
-                    constant_multiplier=cfg.dataloader.constant_multiplier,
-                    mask_cloud=cfg.test.mask_cloud,
-                    replace_label=cfg.dataloader.replace_label,
-                    reduce_to_zero=cfg.dataloader.reduce_to_zero,
-                )
-            except rasterio.RasterioIOError:
-                continue
-            nan_mask = hls_tile == cfg.dataloader.no_data_value
-            nan_mask = np.any(nan_mask, axis=0).astype(int)
-            hls_tile, _ = process_and_augment(
-                hls_tile,
-                None,
-                mean=cfg.dataloader.mean,
-                std=cfg.dataloader.std,
-                temporal_size=cfg.dataloader.temporal_dim,
-                augment=False,
-            )
-            prediction = sliding_window_inference(
-                hls_tile,
-                model,
-                window_size=(cfg.test.img_size, cfg.test.img_size),
-                stride=cfg.test.stride,
-                batch_size=cfg.train.batch_size,
-                device=get_device(),
-            )
-            prediction = np.where(nan_mask == 1, np.nan, prediction)
-            prediction_filename = os.path.join(output_dir, f"{key}_prediction.tif")
-            with rasterio.open(hls_tile_path["tiles"]["B02_0"]) as src:
-                crs = src.crs
-                transform = src.transform
-            with rasterio.open(
-                prediction_filename,
-                "w",
-                driver="GTiff",
-                height=prediction.shape[0],
-                width=prediction.shape[1],
-                count=1,
-                dtype=str(prediction.dtype),
-                crs=crs,
-                transform=transform,
-            ) as dst:
-                dst.write(prediction, 1)
-
-    # TODO: Add support for chips that are greater than image size used for training
     elif cfg.mode == "chip_inference":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)
         output_dir = os.path.join(root_dir, "predictions")
@@ -816,6 +745,69 @@ def main(cfg: DictConfig) -> None:
             weight_decay=cfg.train.weight_decay,
         )
         chip_inference(test_loader, output_dir, model, device=get_device())
+
+
+def train_with_optimization(model, train_loader, val_loader, config):
+    """優化的訓練流程"""
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay
+    )
+    
+    # 使用OneCycleLR調度器
+    scheduler = OneCycleLR(
+        optimizer,
+        max_lr=config.learning_rate * 10,
+        epochs=config.num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.3
+    )
+    
+    # 使用混合精度訓練
+    scaler = GradScaler()
+    
+    # 使用標籤平滑
+    criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+    
+    for epoch in range(config.num_epochs):
+        model.train()
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.cuda(), target.cuda()
+            
+            # 混合精度訓練
+            with autocast():
+                output = model(data)
+                loss = criterion(output, target)
+            
+            optimizer.zero_grad()
+            scaler.scale(loss).backward()
+            
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            
+        # 驗證
+        val_loss, val_acc = validate_model(model, val_loader)
+        print(f'Epoch {epoch}: val_loss={val_loss:.4f}, val_acc={val_acc:.4f}')
+
+class LabelSmoothingCrossEntropy(nn.Module):
+    """標籤平滑損失函數"""
+    def __init__(self, smoothing=0.1):
+        super().__init__()
+        self.smoothing = smoothing
+        
+    def forward(self, x, target):
+        confidence = 1. - self.smoothing
+        logprobs = F.log_softmax(x, dim=1)
+        nll_loss = -logprobs.gather(dim=1, index=target.unsqueeze(1))
+        nll_loss = nll_loss.squeeze(1)
+        smooth_loss = -logprobs.mean(dim=1)
+        loss = confidence * nll_loss + self.smoothing * smooth_loss
+        return loss.mean()
 
 
 if __name__ == "__main__":
