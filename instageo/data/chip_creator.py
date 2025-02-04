@@ -22,7 +22,7 @@
 import json
 import os
 from functools import partial
-from typing import Any
+from typing import Any, Callable, Tuple
 
 import dask.distributed
 import earthaccess
@@ -31,6 +31,8 @@ import rasterio
 from absl import app, flags, logging
 from dotenv import load_dotenv
 from tqdm import tqdm
+import numpy as np
+from scipy import ndimage
 
 from instageo.data import hls_utils, s2_utils
 from instageo.data.data_pipeline import (
@@ -157,6 +159,58 @@ def setup() -> None:
     env = rasterio.Env(**GDALOptions().model_dump())
     env.__enter__()
 
+
+def enhance_data_processing(data: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """增強數據處理流程
+    
+    Args:
+        data: 輸入數據 [bands, height, width]
+        mask: 標籤掩碼 [height, width]
+        
+    Returns:
+        tuple: (處理後的數據, 處理後的掩碼)
+    """
+    # 1. 異常值處理
+    percentile_99 = np.percentile(data, 99, axis=(1,2))
+    for i in range(data.shape[0]):
+        data[i] = np.clip(data[i], 0, percentile_99[i])
+    
+    # 2. 去噪處理
+    data = ndimage.median_filter(data, size=3)
+    
+    # 3. 增強對比度
+    p2, p98 = np.percentile(data, (2, 98))
+    data = np.clip(data, p2, p98)
+    data = (data - p2) / (p98 - p2)
+    
+    return data, mask
+
+def calculate_spectral_indices(data: np.ndarray) -> np.ndarray:
+    """計算光譜指數
+    
+    Args:
+        data: 多光譜數據 [bands, height, width]
+        
+    Returns:
+        np.ndarray: 添加了光譜指數的數據
+    """
+    # 獲取相關波段
+    blue = data[0]  # Blue band
+    green = data[1]  # Green band
+    red = data[2]   # Red band
+    nir = data[3]   # NIR band
+    swir1 = data[4] # SWIR1 band
+    swir2 = data[5] # SWIR2 band
+    
+    # 計算各種指數
+    ndvi = (nir - red) / (nir + red + 1e-6)
+    ndwi = (green - nir) / (green + nir + 1e-6)
+    ndbi = (swir1 - nir) / (swir1 + nir + 1e-6)
+    bsi = ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) + 1e-6)
+    
+    # 堆疊所有波段和指數
+    indices = np.stack([ndvi, ndwi, ndbi, bsi])
+    return np.concatenate([data, indices], axis=0)
 
 def main(argv: Any) -> None:
     """CSV Chip Creator.
