@@ -35,6 +35,8 @@ import rioxarray as rxr
 import xarray as xr
 from absl import logging
 from rasterio.crs import CRS
+from scipy import ndimage
+import numpy as np
 
 from instageo.data.data_pipeline import get_tile_info, make_valid_bbox
 
@@ -466,3 +468,80 @@ def parallel_download(urls: set[str], outdir: str, max_retries: int = 3) -> None
         logging.warning(
             f"Couldn't download the following granules after {max_retries} retries:\n{urls}"  # noqa
         )
+
+
+def advanced_data_augmentation(
+    data: np.ndarray,
+    mask: np.ndarray,
+    augmentation_probability: float = 0.5
+) -> tuple[np.ndarray, np.ndarray]:
+    """高級數據增強
+    
+    Args:
+        data: 輸入數據
+        mask: 標籤掩碼
+        augmentation_probability: 應用增強的概率
+        
+    Returns:
+        tuple: (增強後的數據, 增強後的掩碼)
+    """
+    if np.random.random() < augmentation_probability:
+        # 1. 隨機旋轉
+        angle = np.random.randint(-30, 30)
+        data = ndimage.rotate(data, angle, axes=(1, 2), reshape=False)
+        if mask is not None:
+            mask = ndimage.rotate(mask, angle, reshape=False)
+        
+        # 2. 隨機縮放
+        scale = np.random.uniform(0.8, 1.2)
+        data = ndimage.zoom(data, (1, scale, scale))
+        if mask is not None:
+            mask = ndimage.zoom(mask, (scale, scale))
+            
+        # 3. 隨機翻轉
+        if np.random.random() < 0.5:
+            data = np.flip(data, axis=1)
+            if mask is not None:
+                mask = np.flip(mask, axis=0)
+        if np.random.random() < 0.5:
+            data = np.flip(data, axis=2)
+            if mask is not None:
+                mask = np.flip(mask, axis=1)
+                
+        # 4. 彈性變形
+        if np.random.random() < 0.3:
+            alpha = np.random.rand() * 500 + 500
+            sigma = np.random.rand() * 14 + 14
+            shape = data.shape[1:]
+            
+            dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
+            dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
+            
+            x, y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing='ij')
+            indices = np.reshape(x+dx, (-1, 1)), np.reshape(y+dy, (-1, 1))
+            
+            for i in range(data.shape[0]):
+                data[i] = map_coordinates(data[i], indices, order=1).reshape(shape)
+            if mask is not None:
+                mask = map_coordinates(mask, indices, order=1).reshape(shape)
+    
+    return data, mask
+
+
+def process_data(data: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """處理HLS數據
+    
+    Args:
+        data: 輸入數據
+        mask: 標籤掩碼
+        
+    Returns:
+        tuple: (處理後的數據, 處理後的掩碼)
+    """
+    # 1. 應用數據增強
+    data, mask = enhance_data_processing(data, mask)
+    
+    # 2. 應用高級數據增強
+    data, mask = advanced_data_augmentation(data, mask)
+    
+    return data, mask
