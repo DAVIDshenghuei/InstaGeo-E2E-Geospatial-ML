@@ -321,25 +321,23 @@ def load_data_from_csv(fname: str, input_root: str) -> List[Tuple[str, str | Non
     
     label_present = True if "Label" in data.columns else False
     for idx, row in data.iterrows():
-        # 不要添加 input_root，因為 CSV 中已經包含了完整路徑
-        im_path = row["Input"]
-        mask_path = None if not label_present else row["Label"]
+        # 使用絕對路徑
+        im_path = row["Input"] if os.path.isabs(row["Input"]) else os.path.join(input_root, row["Input"])
+        mask_path = None
+        if label_present:
+            mask_path = row["Label"] if os.path.isabs(row["Label"]) else os.path.join(input_root, row["Label"])
         
-        # 檢查文件是否存在
-        full_im_path = os.path.join(input_root, im_path)
-        full_mask_path = os.path.join(input_root, mask_path) if mask_path else None
-        
-        print(f"Checking file {idx}: {full_im_path}")
-        if os.path.exists(full_im_path):
+        print(f"Checking file {idx}: {im_path}")
+        if os.path.exists(im_path):
             try:
-                with rasterio.open(full_im_path) as src:
+                with rasterio.open(im_path) as src:
                     _ = src.crs
-                file_paths.append((full_im_path, full_mask_path))
+                file_paths.append((im_path, mask_path))
             except Exception as e:
-                print(f"Error reading file {full_im_path}: {e}")
+                print(f"Error reading file {im_path}: {e}")
                 continue
         else:
-            print(f"File not found: {full_im_path}")
+            print(f"File not found: {im_path}")
             
     print(f"Total valid files found: {len(file_paths)}")
     return file_paths
