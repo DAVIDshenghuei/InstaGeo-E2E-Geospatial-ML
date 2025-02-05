@@ -319,25 +319,32 @@ def load_data_from_csv(fname: str, input_root: str) -> List[Tuple[str, str | Non
         input_root (str): Root directory for input images and labels.
 
     Returns:
-        List[Tuple[str, str]]: A list of tuples, each containing file paths for input
-        image and label image.
+        List[Tuple[str, str]]: A list of tuples containing file paths
     """
     file_paths = []
+    print(f"Loading CSV from: {fname}")
     data = pd.read_csv(fname)
+    print(f"CSV columns: {data.columns.tolist()}")
+    print(f"Total rows in CSV: {len(data)}")
+    
     label_present = True if "Label" in data.columns else False
-    for _, row in data.iterrows():
+    for idx, row in data.iterrows():
         im_path = os.path.join(input_root, row["Input"])
-        mask_path = (
-            None if not label_present else os.path.join(input_root, row["Label"])
-        )
+        mask_path = None if not label_present else os.path.join(input_root, row["Label"])
+        
+        print(f"Checking file {idx}: {im_path}")
         if os.path.exists(im_path):
             try:
                 with rasterio.open(im_path) as src:
                     _ = src.crs
                 file_paths.append((im_path, mask_path))
             except Exception as e:
-                logging.error(e)
+                print(f"Error reading file {im_path}: {e}")
                 continue
+        else:
+            print(f"File not found: {im_path}")
+            
+    print(f"Total valid files found: {len(file_paths)}")
     return file_paths
 
 
